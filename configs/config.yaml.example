@@ -1,0 +1,23 @@
+# Auto-Healer Configuration
+# https://github.com/tommieseals/auto-healer
+
+# Global settings
+alert_wait_minutes: 10
+check_interval_seconds: 60
+
+# Notification channels
+notifications:
+  telegram:
+    enabled: true
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    chat_id: ${TELEGRAM_CHAT_ID}
+
+# Services to monitor
+services:
+  - name: example-app
+    check_command: "pgrep -x example-app"
+    restart_command: "/opt/example-app/start.sh"
+    working_dir: /opt/example-app
+    log_file: /var/log/example-app.log
+    log_lines: 30
+

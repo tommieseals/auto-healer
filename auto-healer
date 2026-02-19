@@ -1,0 +1,161 @@
+#!/bin/bash
+# Auto-Healer - Self-healing service monitor
+# https://github.com/tommieseals/auto-healer
+
+set -e
+
+VERSION="1.0.0"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/auto-healer"
+CONFIG_FILE="$CONFIG_DIR/config.yaml"
+LOCK_DIR="/tmp/auto-healer"
+LOG_FILE="/tmp/auto-healer.log"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+    [ -t 1 ] && echo -e "$1"
+}
+
+send_telegram() {
+    local msg="$1"
+    local token=$(grep 'bot_token:' "$CONFIG_FILE" | head -1 | sed 's/.*: *//' | envsubst)
+    local chat_id=$(grep 'chat_id:' "$CONFIG_FILE" | head -1 | sed 's/.*: *//' | envsubst)
+    
+    [ -z "$token" ] || [ -z "$chat_id" ] && return 1
+    
+    curl -s -X POST "https://api.telegram.org/bot${token}/sendMessage" \
+        -d "chat_id=${chat_id}" \
+        -d "text=${msg}" \
+        -d "parse_mode=Markdown" > /dev/null 2>&1
+}
+
+notify() {
+    local msg="$1"
+    send_telegram "$msg" || true
+}
+
+get_services() {
+    grep '  - name:' "$CONFIG_FILE" | sed 's/.*name: *//'
+}
+
+get_service_field() {
+    local service="$1"
+    local field="$2"
+    awk "/name: $service/,/^  - name:/" "$CONFIG_FILE" | grep "$field:" | head -1 | sed "s/.*$field: *//"
+}
+
+check_service() {
+    local service="$1"
+    local check_cmd=$(get_service_field "$service" "check_command")
+    check_cmd=$(echo "$check_cmd" | tr -d '"')
+    
+    if eval "$check_cmd" > /dev/null 2>&1; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+restart_service() {
+    local service="$1"
+    local restart_cmd=$(get_service_field "$service" "restart_command")
+    local working_dir=$(get_service_field "$service" "working_dir")
+    
+    restart_cmd=$(echo "$restart_cmd" | tr -d '"')
+    working_dir=$(echo "$working_dir" | tr -d '"')
+    
+    log "${CYAN}Restarting $service...${NC}"
+    
+    if [ -n "$working_dir" ]; then
+        cd "$working_dir" 2>/dev/null || true
+    fi
+    
+    if eval "nohup $restart_cmd > /tmp/${service}.log 2>&1 &"; then
+        sleep 3
+        if check_service "$service"; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+get_crash_logs() {
+    local service="$1"
+    local log_file=$(get_service_field "$service" "log_file")
+    local log_lines=$(get_service_field "$service" "log_lines")
+    
+    [ -z "$log_lines" ] && log_lines=30
+    [ -z "$log_file" ] && return
+    
+    log_file=$(echo "$log_file" | tr -d '"')
+    
+    if [ -f "$log_file" ]; then
+        tail -"$log_lines" "$log_file" 2>/dev/null | grep -iE "error|fail|crash" | tail -5
+    fi
+}
+
+do_check() {
+    mkdir -p "$LOCK_DIR"
+    local wait_minutes=$(grep 'alert_wait_minutes:' "$CONFIG_FILE" | head -1 | sed 's/.*: *//')
+    [ -z "$wait_minutes" ] && wait_minutes=10
+    local wait_seconds=$((wait_minutes * 60))
+    
+    for service in $(get_services); do
+        local lockfile="$LOCK_DIR/${service}.lock"
+        
+        if check_service "$service"; then
+            rm -f "$lockfile"
+            log "${GREEN}OK $service is running${NC}"
+        else
+            if [ -f "$lockfile" ]; then
+                local lock_time=$(cat "$lockfile")
+                local current_time=$(date +%s)
+                local elapsed=$((current_time - lock_time))
+                
+                if [ $elapsed -ge $wait_seconds ]; then
+                    if restart_service "$service"; then
+                        local pid=$(pgrep -f "$service" | head -1)
+                        notify "Auto-Healer: $service restarted (PID: ${pid:-unknown})"
+                        log "${GREEN}OK $service restarted${NC}"
+                    else
+                        notify "Auto-Healer: $service restart FAILED"
+                        log "${RED}FAIL $service restart failed${NC}"
+                    fi
+                    rm -f "$lockfile"
+                fi
+            else
+                date +%s > "$lockfile"
+                local crash_logs=$(get_crash_logs "$service")
+                notify "Auto-Healer: $service DOWN - will restart in ${wait_minutes}m"
+                log "${RED}DOWN $service - alert sent${NC}"
+            fi
+        fi
+    done
+}
+
+do_status() {
+    echo -e "${CYAN}Auto-Healer Status${NC}"
+    echo "===================="
+    for service in $(get_services); do
+        if check_service "$service"; then
+            echo -e "${GREEN}OK${NC} $service: running"
+        else
+            echo -e "${RED}DOWN${NC} $service: DOWN"
+        fi
+    done
+}
+
+case "${1:-check}" in
+    check)      do_check ;;
+    status)     do_status ;;
+    restart)    restart_service "$2" ;;
+    test-notify) notify "Auto-Healer test notification"; echo "Sent!" ;;
+    version)    echo "auto-healer $VERSION" ;;
+    *)          echo "Usage: auto-healer {check|status|restart|test-notify|version}" ;;
+esac
+
