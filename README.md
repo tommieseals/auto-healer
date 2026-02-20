@@ -1,4 +1,4 @@
-# ???? Auto-Healer
+# 🔧 Auto-Healer
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Bash](https://img.shields.io/badge/bash-5.0+-green.svg)](https://www.gnu.org/software/bash/)
@@ -19,7 +19,7 @@ Services crash. When they do at 3 AM, you get paged. You:
 Auto-Healer monitors your services and:
 - **Detects** when services go down
 - **Alerts** you immediately (Telegram, Slack, email)
-- **Waits** a configurable grace period (maybe it is self-recovering)
+- **Waits** a configurable grace period (maybe it's self-recovering)
 - **Restarts** automatically if still down
 - **Logs** everything for post-mortems
 
@@ -41,34 +41,65 @@ cd auto-healer
 
 ### Configuration
 
-Edit ~/.config/auto-healer/config.yaml
+Edit `~/.config/auto-healer/config.yaml`:
+
+```yaml
+services:
+  - name: nginx
+    check_command: "systemctl is-active nginx"
+    restart_command: "sudo systemctl restart nginx"
+    grace_period: 300  # 5 minutes
+    
+  - name: postgres
+    check_command: "pg_isready"
+    restart_command: "sudo systemctl restart postgresql"
+    grace_period: 600  # 10 minutes
+
+alerts:
+  telegram:
+    enabled: true
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    chat_id: ${TELEGRAM_CHAT_ID}
+```
 
 ## How It Works
 
 ```
-Service Down -> Alert User -> Wait 10min -> Auto-Restart
+Service Down → Alert User → Wait Grace Period → Auto-Restart → Verify
 ```
 
-## Scheduling
+1. **Check Loop**: Runs every 60 seconds (configurable)
+2. **Detection**: Service check command returns non-zero
+3. **Alert**: Immediate notification with crash context
+4. **Grace Period**: Wait for potential self-recovery
+5. **Recovery**: Execute restart command
+6. **Verification**: Confirm service is back up
+7. **Report**: Send recovery notification
 
-### With Cron (recommended)
+## Features
 
-```bash
-# Check every minute
-* * * * * /usr/local/bin/auto-healer check
+- **Multi-service monitoring**: Track any number of services
+- **Configurable grace periods**: Per-service timing
+- **Multiple alert channels**: Telegram, Slack, email, webhook
+- **Crash log capture**: Include relevant logs in alerts
+- **Retry logic**: Configurable restart attempts
+- **Health verification**: Confirm recovery before reporting success
+
+## Alert Example
+
 ```
+⚠️ SERVICE DOWN: nginx
 
-## Commands
+Host: production-server-1
+Time: 2025-02-19 03:42:15 UTC
+Status: Not responding
 
-```bash
-auto-healer check          # Run health check
-auto-healer status         # Show service status
-auto-healer restart name   # Force restart a service
-auto-healer logs name      # View service logs
-auto-healer test-notify    # Test notifications
+Last 10 log lines:
+[error] upstream timed out...
+
+Action: Auto-restart scheduled in 5 minutes
 ```
 
 ## License
 
 MIT License - see LICENSE
-
